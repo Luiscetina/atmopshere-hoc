@@ -42,9 +42,20 @@ jobs:
           apt-get update
           apt-get install -y ccache
 
+      # Atmosphere 1.12.x necesita una libnx mas nueva que la etiqueta v4.12.0
+      # (usa FsStorageForBatchRead). Se fija este commit de libnx (2026-10-19),
+      # que si lo incluye.
       - name: Clone Libnx
         shell: bash
-        run: git clone https://github.com/switchbrew/libnx.git --depth=1 --single-branch -b v4.12.0
+        run: |
+          set -e
+          mkdir libnx
+          cd libnx
+          git init -q
+          git remote add origin https://github.com/switchbrew/libnx.git
+          git fetch --depth 1 origin b156b4774fb2df7b93402169509266da7547fc4c
+          git checkout -q FETCH_HEAD
+          grep -rl FsStorageForBatchRead nx/include | head -1
 
       # Los archivos de HOC viven en hoc-loader/ para no tocar el Loader normal
       # de tu Atmosphere (el que va dentro del paquete y lleva solo el USB).
