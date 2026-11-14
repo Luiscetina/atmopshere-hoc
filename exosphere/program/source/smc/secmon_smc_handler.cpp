@@ -152,6 +152,7 @@ namespace ams::secmon::smc {
             { 0xF0000002, Restriction_None,               SmcReadWriteRegister },
             { 0xF0000003, Restriction_None,               SmcWriteAddress      },
             { 0xF0000404, Restriction_None,               SmcGetEmummcConfig   },
+            { 0xF0000005, Restriction_None,               SmcShowError         },
         };
 
         constexpr const HandlerInfo GetSecureDataHandlerInfo = {

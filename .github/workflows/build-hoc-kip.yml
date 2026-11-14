@@ -1,0 +1,103 @@
+name: Build hoc.kip (HOC + USB)
+
+# Compila el Loader de este repositorio (Atmosphere con USB) con el codigo de
+# overclock de Horizon OC 2.6.1 y entrega un hoc.kip.
+# Se ejecuta a mano: pestana Actions -> "Build hoc.kip (HOC + USB)" -> Run workflow.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    # Misma imagen de devkitA64 que usa el workflow oficial de Horizon OC 2.6.1
+    container:
+      image: devkitpro/devkita64:20260219
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Set devkitPro PATH
+        shell: bash
+        run: |
+          echo "DEVKITPRO=/opt/devkitpro" >> $GITHUB_ENV
+          echo "DEVKITA64=/opt/devkitpro/devkitA64" >> $GITHUB_ENV
+          echo "DEVKITARM=/opt/devkitpro/devkitARM" >> $GITHUB_ENV
+          echo "PATH=/opt/devkitpro/devkitA64/bin:/opt/devkitpro/devkitARM/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Check toolchain
+        shell: bash
+        run: |
+          aarch64-none-elf-gcc --version
+          aarch64-none-elf-g++ --version
+          if ! command -v hactool >/dev/null 2>&1; then
+            echo "::error::hactool no esta en la imagen de devkitA64. Avisame para ajustar el workflow."
+            exit 1
+          fi
+
+      - name: Install ccache
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y ccache
+
+      - name: Clone Libnx
+        shell: bash
+        run: git clone https://github.com/switchbrew/libnx.git --depth=1 --single-branch -b v4.12.0
+
+      # Los archivos de HOC viven en hoc-loader/ para no tocar el Loader normal
+      # de tu Atmosphere (el que va dentro del paquete y lleva solo el USB).
+      - name: Overlay Horizon OC onto the Loader
+        shell: bash
+        run: |
+          set -e
+          cp -rf hoc-loader/source/* stratosphere/loader/source/
+          cp -f hoc-loader/loader.json stratosphere/loader/loader.json
+          cp -f hoc-loader/system_module.mk stratosphere/loader/system_module.mk
+          ls stratosphere/loader/source/oc | head
+
+      - name: Cache ccache
+        uses: actions/cache@v5.0.5
+        with:
+          path: .ccache
+          key: ccache-hoc-usb-${{ github.run_id }}
+          restore-keys: |
+            ccache-hoc-usb-
+
+      - name: Configure ccache
+        shell: bash
+        run: |
+          echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache" >> $GITHUB_ENV
+          echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE" >> $GITHUB_ENV
+          echo "CCACHE_COMPILERCHECK=content" >> $GITHUB_ENV
+          echo "CCACHE_NOHASHDIR=true" >> $GITHUB_ENV
+
+      - name: Build Libnx
+        shell: bash
+        run: |
+          set -e
+          pushd libnx
+          make -j$(($(nproc) * 4)) install CXX="ccache aarch64-none-elf-g++" CC="ccache aarch64-none-elf-gcc"
+          popd
+
+      - name: Build Loader kip
+        shell: bash
+        working-directory: stratosphere/loader
+        run: |
+          set -e
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          make -j$(($(nproc) * 4)) CXX="ccache aarch64-none-elf-g++" CC="ccache aarch64-none-elf-gcc"
+          hactool -t kip1 out/nintendo_nx_arm64_armv8a/release/loader.kip --uncompress=hoc.kip
+          mkdir -p "$GITHUB_WORKSPACE/hoc-out/atmosphere/kips"
+          cp hoc.kip "$GITHUB_WORKSPACE/hoc-out/atmosphere/kips/hoc.kip"
+          ls -l "$GITHUB_WORKSPACE/hoc-out/atmosphere/kips/hoc.kip"
+          sha256sum "$GITHUB_WORKSPACE/hoc-out/atmosphere/kips/hoc.kip"
+
+      - name: Upload hoc.kip
+        uses: actions/upload-artifact@v6
+        with:
+          name: hoc-kip-usb
+          path: hoc-out
+          if-no-files-found: error
+          compression-level: 6

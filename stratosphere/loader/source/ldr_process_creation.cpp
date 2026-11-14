@@ -864,6 +864,13 @@ namespace ams::ldr {
         ProcessInfo info;
         R_TRY(CreateProcessAndLoadAutoLoadModules(std::addressof(info), std::addressof(meta), ctx, argument, flags, resource_limit));
 
+        /* Only a bound USB code mount has a USB resource snapshot.
+         * Ordinary SD/HBL creation makes no additional service request. */
+        if (mount.UsesUsbCode()) {
+            const Result bind = BindUsbProcessContent(pin_id, loc.program_id, os::GetProcessId(info.process_handle));
+            if (R_FAILED(bind)) { R_DISCARD(svc::CloseHandle(info.process_handle)); R_RETURN(bind); }
+        }
+
         /* Register NSOs with the RoManager. */
         {
             /* Nintendo doesn't validate this get, but we do. */
@@ -887,6 +894,7 @@ namespace ams::ldr {
 
         /* Clear the external code for the program. */
         fssystem::DestroyExternalCode(loc.program_id);
+        ClearUsbExternalCodeVerification(loc.program_id);
 
         /* Note that we've created the program. */
         SetLaunchedBootProgram(loc.program_id);
@@ -922,6 +930,7 @@ namespace ams::ldr {
 
     Result UnpinProgram(PinId id) {
         R_UNLESS(RoManager::GetInstance().Free(id), ldr::ResultNotPinned());
+        ReleaseUsbProcessContent(id);
         R_SUCCEED();
     }
 

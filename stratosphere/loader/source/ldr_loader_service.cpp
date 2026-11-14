@@ -124,6 +124,7 @@ namespace ams::ldr {
 
     void LoaderService::UnregisterExternalCode(ncm::ProgramId program_id) {
         fssystem::DestroyExternalCode(program_id);
+        ClearUsbExternalCodeVerification(program_id);
     }
 
     void LoaderService::HasLaunchedBootProgram(bool *out, ncm::ProgramId program_id) {

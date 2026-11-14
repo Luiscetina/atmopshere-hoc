@@ -120,5 +120,10 @@
 		}, {
 			"type":	"handle_table_size",
 			"value":	0
+		}, {
+                        "type": "debug_flags",
+                        "value": {
+                "force_debug": true
+		        }
 		}]
 }
