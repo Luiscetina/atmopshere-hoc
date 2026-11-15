@@ -21,6 +21,7 @@
 #include "ldr_launch_record.hpp"
 #include "ldr_meta.hpp"
 #include "ldr_patcher.hpp"
+#include "ldr_qlaunch_compat.hpp"
 #include "ldr_process_creation.hpp"
 #include "ldr_ro_manager.hpp"
 #include "oc/oc_loader.hpp"
@@ -711,7 +712,7 @@ namespace ams::ldr {
             R_SUCCEED();
         }
 
-        Result LoadAutoLoadModule(os::NativeHandle process_handle, fs::FileHandle file, const NsoHeader *nso_header, uintptr_t nso_address, size_t nso_size, size_t map_size) {
+        Result LoadAutoLoadModule(os::NativeHandle process_handle, fs::FileHandle file, ncm::ProgramId program_id, bool is_main_nso, const NsoHeader *nso_header, uintptr_t nso_address, size_t nso_size, size_t map_size) {
             const bool is_zbic = (nso_header->flags & NsoHeader::Flag_UseZbicCompression) != 0;
 
             const size_t module_size = static_cast<size_t>(nso_header->rw_dst_offset) + util::AlignUp(nso_header->rw_size + nso_header->bss_size, os::MemoryPageSize);
@@ -751,6 +752,15 @@ namespace ams::ldr {
                 /* Apply embedded patches. */
                 ApplyEmbeddedPatchesToModule(nso_header->module_id, map_address, nso_size);
 
+                /* C9: Nexus qlaunch theme compatibility on 23.0.0/23.0.1, without replacing the
+                 * USB/native-error patch policy or patching other programs. */
+                if (program_id == ncm::SystemAppletId::Qlaunch && is_main_nso
+                        && nso_header->text_dst_offset <= map_size
+                        && nso_header->text_size <= map_size - nso_header->text_dst_offset) {
+                    qlaunch_compat::ApplyForFirmware(static_cast<u32>(hos::GetVersion()),
+                        reinterpret_cast<u8 *>(map_address + nso_header->text_dst_offset), nso_header->text_size);
+                }
+
                 /* Apply IPS patches. */
                 LocateAndApplyIpsPatchesToModule(nso_header->module_id, map_address, nso_size);
 
@@ -770,6 +780,10 @@ namespace ams::ldr {
                 if (g_is_ptm) {
                     hoc::ptm::Patch(map_address, nso_size);
                 }
+
+                /* Record the final bytes after both embedded and SD IPS
+                 * patches. This is active only for exact diagnostic targets. */
+                FinalizeEmbeddedPatchDiagnostics(program_id, is_main_nso, nso_header->module_id, map_address, nso_size);
             }
 
             /* Set permissions. */
@@ -790,7 +804,7 @@ namespace ams::ldr {
             R_SUCCEED();
         }
 
-        Result LoadAutoLoadModules(const ProcessInfo *process_info, const AutoLoadModuleContext &ctx, const ArgumentStore::Entry *argument) {
+        Result LoadAutoLoadModules(const ProcessInfo *process_info, ncm::ProgramId program_id, const AutoLoadModuleContext &ctx, const ArgumentStore::Entry *argument) {
             /* Load each NSO. */
             const uintptr_t total_end = process_info->code_address + process_info->total_size;
 
@@ -805,7 +819,7 @@ namespace ams::ldr {
                 R_TRY(fs::OpenFile(std::addressof(file), GetNsoPath(nso_idx), fs::OpenMode_Read));
                 ON_SCOPE_EXIT { fs::CloseFile(file); };
 
-                R_TRY(LoadAutoLoadModule(process_info->process_handle, file, ctx.headers + i,
+                R_TRY(LoadAutoLoadModule(process_info->process_handle, file, program_id, nso_idx == Nso_Main, ctx.headers + i,
                       process_info->nso_address[i], process_info->nso_size[i], map_size));
             }
 
@@ -850,7 +864,7 @@ namespace ams::ldr {
             ON_RESULT_FAILURE { R_DISCARD(svc::CloseHandle(process_handle)); };
 
             /* Load all auto load modules. */
-            R_RETURN(LoadAutoLoadModules(out, ctx, argument));
+            R_RETURN(LoadAutoLoadModules(out, meta->aci->program_id, ctx, argument));
         }
 
     }
@@ -899,12 +913,17 @@ namespace ams::ldr {
         ProcessInfo info;
         R_TRY(CreateProcessAndLoadAutoLoadModules(std::addressof(info), std::addressof(meta), ctx, argument, flags, resource_limit));
 
-        /* Only a bound USB code mount has a USB resource snapshot.
-         * Ordinary SD/HBL creation makes no additional service request. */
+        /* The process cannot run yet. Only verified USB ExeFS launches bind
+         * their immutable resource snapshot. Native/HBL launches make no
+         * service request and cannot inherit an old title-map association. */
         if (mount.UsesUsbCode()) {
-            const Result bind = BindUsbProcessContent(pin_id, loc.program_id, os::GetProcessId(info.process_handle));
-            if (R_FAILED(bind)) { R_DISCARD(svc::CloseHandle(info.process_handle)); R_RETURN(bind); }
+            const Result bind_result = BindUsbProcessContent(pin_id, loc.program_id, os::GetProcessId(info.process_handle));
+            if (R_FAILED(bind_result)) {
+                R_DISCARD(svc::CloseHandle(info.process_handle));
+                R_RETURN(bind_result);
+            }
         }
+
 
         /* Register NSOs with the RoManager. */
         {
